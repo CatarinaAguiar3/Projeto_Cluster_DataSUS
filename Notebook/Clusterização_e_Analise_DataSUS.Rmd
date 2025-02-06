@@ -1,0 +1,1718 @@
+---
+title: "Clusterização - DataSUS"
+author: 
+    - name: "Catarina Aguiar"
+output:
+  rmdformats::robobook:
+    highlight: kate
+    code_folding: show  # Exibir código com opção de dobrar
+    code_tools: true  # Ferramentas de código habilitadas
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+## Global options
+knitr::opts_chunk$set(cache = TRUE)
+```
+
+# Introdução
+
+A seguir, temos a 2ª atividade avaliativa, da disciplina de Introdução à
+Banco de Dados (FEA-RP \| USP).
+
+Eu fiz uma Análise de dados sobre **Óbitos maternos durante a gravidez,
+parto e o puerpério** de mulheres com **idades entre 10 a 49 anos** ,
+ocorridos nos **municípios do estado do Rio de Janeiro, entre 2012 e
+2022**.
+
+Em seguida, utilizei um método de segmentação chamado cluster
+hierárquico,que permitirá agrupar os municípios em categorias e
+estabelecer relações de similaridade e hierarquia entre eles.
+
+Os dados foram coletados de diversas fontes: DataSUS, IBGE e o site
+Atlas.
+
+# Diretório
+
+```{r message=FALSE, warning=FALSE}
+getwd()
+```
+
+```{r}
+#setwd("C:/Users/Usuário/Documents/Disciplinas 2024.2/Introducao_a_Banco_de_Dados/Desafio_02")
+```
+
+# Importar pacotes
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl) # carregar arquivos .xlsx (Excel)
+library(openxlsx) # Salvar tabela no formato .xlsx (Excel)
+library(DT) # Função datatable()
+library(kableExtra) #Visualização (parecido com o pacote "DT")
+
+library(sf) # dados espaciais
+library(geobr) #  dados espaciais
+
+library(forcats) # Ordenar os valores no gráfico ggplot()
+
+library(plotly)# Usar ggplotly()
+library(scales) # Usar scale_x_continuous()
+
+library(viridis) # Paleta de cores
+
+library(gridExtra) # usar no grid.arrange()
+library(grid)
+
+library(Hmisc) # calcular correlação -->  rcorr()
+library(ggcorrplot) # grafico de correlação --> ggcorrplot()
+```
+
+# Carregar dados principais
+
+```{r}
+dados_socioeconomicos <- read_excel("../Dados/Dados_Economicos/dados_socioeconomicos.xlsx") 
+
+dados_socioeconomicos <- dados_socioeconomicos %>% 
+                         mutate(
+                           Codmun7 = as.character(Codmun7),
+                           Codmun6 = as.character(Codmun6),
+                         )
+```
+
+```{r}
+tabela_municipio <- read_excel("../Dados/Dados_Transformados/Transformacao_parte_1/tabela_municipio.xlsx") %>% 
+                         mutate(
+                           Codmun7 = as.character(Codmun7),
+                           Codmun6 = as.character(Codmun6),
+                         )
+```
+
+```{r}
+taxa_media_obito_1 <- read_excel("../Dados/Dados_Economicos/Dados_Populacao/2.Populacao_feminina_por_faixa_etaria/taxa_media_obito_1.xlsx")
+taxa_media_obito_2 <- read_excel("../Dados/Dados_Economicos/Dados_Populacao/2.Populacao_feminina_por_faixa_etaria/taxa_media_obito_2.xlsx")
+
+obitos_em_relacao_a_populacao_1 <- read_excel("../Dados/Dados_Economicos/Dados_Populacao/2.Populacao_feminina_por_faixa_etaria/obitos_em_relacao_a_populacao_1.xlsx")
+```
+
+# Carregar dados auxiliares
+
+```{r}
+dados_IBGE <- read_excel("../Dados/Dados_Economicos/Dados_IBGE_2022_v3_com_dict.xlsx", sheet=2)%>% 
+                         mutate(
+                           Codmun7 = as.character(Codmun7),
+                           Codmun6 = as.character(Codmun6),
+                         )
+populacao_2022 <- read_excel("../Dados/Dados_Economicos/Dados_Raca_Cor_municipio/Pop_Raca_Cor_Faixa_Etaria_por_municipio_2010_e_2022.xlsx", sheet=4) %>% 
+  .[, !grepl("2010$", colnames(.))] %>%  # Remover colunas que terminam com 2010 
+  mutate(
+   Codmun7 = as.character(Codmun7)
+ )
+```
+
+```{r results = 'hide'}
+dados_espaciais_municipios <- st_read("../Dados/Dados_geom/dados_espaciais_municipios_v2.gpkg")
+```
+
+```{r}
+causa_obito_puerperio_42_2012_2022 <- read_excel("../Dados/Dados_Transformados/Transformacao_parte_1/causa_obito_puerperio_42_2012_2022.xlsx")
+
+causa_obito_puerperio_42_2012_2019<- read_excel("../Dados/Dados_Transformados/Transformacao_parte_1/causa_obito_puerperio_42_2012_2019.xlsx")
+```
+
+# Visualizar tabelas
+
+## Tabela municípios
+
+```{r}
+datatable(head(tabela_municipio),
+          options=list(dom="t"), # Exibir só a tabela
+          caption = "Primeiras linhas da tabela municípios"
+  )
+```
+
+## Dados socioconômicos
+
+```{r}
+datatable(head(dados_socioeconomicos),
+          options=list(dom="t"), # Exibir só a tabela
+          caption = "Primeiras linhas da tabela Dados socioconômicos"
+  )
+```
+
+# 1. Qual a quantidade de óbitos maternos em cada categoria?
+
+Neste tópico, vamos analisar a quantidade total de óbitos, por
+categoria, ocorridos entre 2012 à 2022.
+
+O puerpério até 42 dias após o parto é o momento em que ocorrem mais
+mortes. Ao investigarmos as causas dos óbitos desta categoria, vemos que
+problemas relacionados a doenças virais, são as maiores causas de óbito.
+
+Isso provavelmente oconteceu por causa da COVID-19, possivelmente, a
+paciente foi para o hospital ter o bebê e acabou contraindo Covid.
+
+Prova disso é que as causas do óbito, antes da pandemia, eram
+diferentes. Sendo a maior delas relacionadas ao aparelho circulatório,
+por exemplo, hipertensão pós-parto ou insuficiência cardíaca.
+
+Outras causas estão relacionadas a hemorragias, infecções pós-parto,
+doenças respiratórias, [convulsões que ocorrem com mulheres com
+pré-eclâmpsia](https://www.msdmanuals.com/pt/casa/problemas-de-sa%C3%BAde-feminina/complica%C3%A7%C3%B5es-da-gravidez/pr%C3%A9-ecl%C3%A2mpsia-e-ecl%C3%A2mpsia).
+
+```{r}
+quantidade_total <- tabela_municipio %>% 
+                    # Agrupar pela coluna "Momento_do_Obito"
+                    group_by(Momento_do_Obito) %>% 
+                    reframe(
+                      Total_entre_2012_2019 = sum(Ano_do_Obito >= 2012  & Ano_do_Obito <=2019),
+                      Total_entre_2012_2022 = sum(Ano_do_Obito >= 2012  & Ano_do_Obito <=2022)) %>% 
+                      mutate(
+                        Momento_do_Obito = ifelse(is.na(Momento_do_Obito), "NA", Momento_do_Obito))%>%  
+                      arrange(desc(Total_entre_2012_2022)) # Ordenar pelo valor da coluna "Total"
+```
+
+```{r}
+datatable(quantidade_total,
+          options=list(dom="t"), # Exibir só a tabela
+          caption = "Quantidade Total de óbitos maternos, por categoria"
+  ) 
+```
+
+```{r}
+quantidade_total %>% 
+  ggplot() +
+  geom_col(aes(
+           x=Total_entre_2012_2022, 
+           y=fct_reorder(Momento_do_Obito, Total_entre_2012_2022)), #fct_reorder() -> Ordenar o eixo y
+           fill = "#381850") + 
+  labs(
+    x = "Total (Contagem)",
+    y = "Momento do Óbito Materno",
+    title = "Total de óbitos materno, entre 2012 à 2022, no estado do RJ",
+    subtitle = "Ocorrem mais óbitos no puérperio de até 42 dias após o parto"
+  )+ 
+  geom_text(aes(x=Total_entre_2012_2022, y=Momento_do_Obito, label = Total_entre_2012_2022, hjust=-0.3), size=3.0)+
+  scale_x_continuous(expand = c(0.1, 0)) +  # Expande o eixo X para dar mais espaço
+  theme_minimal() +
+  theme(
+  plot.title.position = "plot"    # Posiciona o título no canto do plot
+)
+
+#  theme(
+#  plot.title = element_text(hjust = 0), # Alinha o texto à esquerda
+#  plot.subtitle = element_text(hjust = 0),
+#  plot.title.position = "plot"    # Posiciona o título no canto do plot
+# )
+```
+
+## Investigar as causas do óbito no Puerpério, ocorridos até 42 dias após o parto
+
+### Entre 2012 à 2022
+
+```{r}
+datatable(head(causa_obito_puerperio_42_2012_2022, 10),           
+  options=list(dom='t'),           
+  caption = "As maiores 10 causas de óbitos no Puerpério, ocorridos até 42 dias após o parto, entre 2012 à 2022")   
+```
+
+### Entre 2012 à 2019
+
+```{r}
+datatable(head(causa_obito_puerperio_42_2012_2019, 10),
+          options=list(dom='t'),
+          caption = "As maiores 10 causas de óbitos no Puerpério, ocorridos até 42 dias após o parto, entre 2012 à 2019")
+```
+
+# 2. Qual a quantidade de óbitos maternos em cada categoria, por ano?
+
+Agora, vamos analisar a quantidade total de óbitos anuais, por
+categoria. <br> É possível notar que todas as categorias se mantiveram
+estáveis até 2019. A partir de 2020, houve um drástico aumento,
+principalmente, em óbitos durante a gravidez e o puérperio de até 42
+dias após o parto. E, conforme dito no tópico anterior, isso
+provavelmente aconteceu por causa da Pandemia.
+
+```{r}
+quantidade_total_anual <- tabela_municipio %>% 
+                          group_by(Ano_do_Obito, Momento_do_Obito) %>% 
+                          reframe(Total_de_Obitos_anuais = n()) %>% 
+                          mutate(Momento_do_Obito = ifelse(is.na(Momento_do_Obito), "NA", Momento_do_Obito)) %>% 
+                          arrange(desc(Total_de_Obitos_anuais))  
+```
+
+```{r}
+datatable(quantidade_total_anual,
+          options = list(PageLength = 10),
+          caption = "Total de óbitos maternos anuais, por categoria, ocorridos entre 2012 e 2022, no estado do RJ")
+```
+
+```{r}
+quant_anual <-quantidade_total_anual %>% 
+          ggplot(aes(x = Ano_do_Obito, y = Total_de_Obitos_anuais, color = Momento_do_Obito)) + #, group = Momento_do_Obito
+          geom_line() +
+          labs(
+            title = "Total anual de óbitos materno, entre 2012 à 2022, no estado do RJ",
+            x = "Ano do Óbito",
+            y = "Total de Óbitos Anuais"
+          ) +
+           scale_x_continuous(
+             breaks = seq(min(quantidade_total_anual$Ano_do_Obito), max(quantidade_total_anual$Ano_do_Obito), by=1),
+             labels = label_number(accuracy = 1)) +  # Remover casas decimais e usar ponto
+theme_minimal()+
+    theme(
+    plot.title = element_text(size = 12), # Ajusta o tamanho da letra do título
+  )
+
+ggplotly(quant_anual,width = 750)%>%
+      layout(legend = list(x = 0.5,
+                           y = -0.5,
+                           xanchor = "center",
+                           yanchor = "bottom",
+                           orientation = "h"))%>%
+  config(displayModeBar = FALSE) %>%  # Desativa a barra de ferramentas superior e o zoom com o scroll
+  layout(
+    xaxis = list(fixedrange = TRUE),  # Desativa o zoom no eixo X
+    yaxis = list(fixedrange = TRUE)   # Desativa o zoom no eixo Y
+  )
+
+
+#%>%
+#  config(displayModeBar = FALSE, scrollZoom = FALSE) %>%  # Desativa a barra de ferramentas superior e o zoom com o scroll
+#  layout(
+#    dragmode = "pan",  # Desativa o zoom e pan com dragmode
+#    xaxis = list(fixedrange = TRUE),  # Desativa o zoom no eixo X
+#    yaxis = list(fixedrange = TRUE)   # Desativa o zoom no eixo Y
+#  )
+```
+
+# 3. Qual a Taxa média de óbitos maternos em cada categoria por município ?
+
+Para verificar a quantidade de óbitos, fiz alguns mapas e histogramas. A
+taxa média de óbitos foi calculada da seguinte forma:
+
+![](images/clipboard-1813937320.png)
+
+Em relação aos resultados abaixo, é possível observar um certo padrão
+nos municípios com as maiores taxas médias de óbitos de cada categoria.
+
+1.  Muitos municípios, com altas taxas médias de óbitos, ficam próximos
+    de outros com altas taxas . Como por exemplo, Rio Bonito e
+    Saquarema, ou Cantagalo e Duas Barras. Isso é um indício de que a
+    localização geográfica pode influenciar na taxa média de óbito
+    materno.
+2.  Municípios do interior (como Resende e Volta Redonda) e da Baixa
+    Fluminense (como Nova Iguaçu e Duque de Caxias ) tem altas taxas
+    média de óbito materno. Algo que eles tem em comum é a pobreza,
+    desigualdade social e falta de infraestrutura.
+
+## Preparar os dados
+
+```{r}
+# Exibir a tabela
+datatable(taxa_media_obito_1,
+          options = list(pageLength = 5),
+          caption = "Taxa média de óbitos maternos, por categoria, ocorridos entre 2012 e 2022, no estado do RJ")
+
+```
+
+```{r}
+# Dimensões da tabela
+dim(taxa_media_obito_1)
+```
+
+### Unir dados
+
+Agora, vou unir a tabela criada acima com a tabela
+dados_espaciais_municipios, que contêm as geometrias de cada município
+do RJ. <br> Em seguida, vou substituir as NA´s por zero, utilizando
+`across()`e `coalesce()`.
+
+```{r}
+taxa_e_geom<- dados_espaciais_municipios %>%
+  left_join(taxa_media_obito_1, by = "Codmun7")  %>%  # Remover coluna redundante
+  mutate(
+    across(starts_with("T"), ~ coalesce(., 0))  # Substituir NA por 0 em colunas que começam com "T"
+  )
+
+# OBS: coalesce() --> Substituir NA´s
+
+```
+
+```{r}
+#st_write(quantidade_muni_2b, "C:/Users/Usuário/Documents/Disciplinas 2024.2/Introducao_a_Banco_de_Dados/Desafio_02/Dados/Dados_Transformados/Transformacao_parte_1/quantidade_muni_2b.gpkg")
+
+#quantidade_muni_2b <- st_read("C:/Users/Usuário/Documents/Disciplinas 2024.2/Introducao_a_Banco_de_Dados/Desafio_02/Dados/Dados_Transformados/Transformacao_parte_1/quantidade_muni_2b.gpkg")
+```
+
+### Checar se a união deu certo
+
+Agora eu vou checar se a união deu certo e se a tabela ainda tem
+informações espaciais.
+
+```{r}
+# Verificar a classe do objeto
+class(taxa_e_geom)
+```
+
+## Funções
+
+### Função para criar histograma
+
+```{r}
+# Função para criar o gráfico
+grafico_ranking <- function(data, var_x, var_y, titulo, lab_x, subtitulo=NULL) {
+  data %>%
+    arrange(desc(.data[[var_x]])) %>%
+    head(10) %>%
+    ggplot() +
+    geom_col(
+      aes(
+        x = .data[[var_x]],
+        y = fct_reorder(.data[[var_y]], .data[[var_x]])#fct_reorder() -> Ordenar o eixo y
+      ),
+      fill = "#381850"
+    ) + 
+    labs(
+      x = lab_x,
+      y = "Município",
+      title = titulo,
+      subtitle = subtitulo # Adiciona o subtítulo apenas se fornecido
+    ) + 
+    geom_text(
+      aes(
+        x = .data[[var_x]],
+        y = .data[[var_y]], 
+        label =  round(.data[[var_x]], 2), # Arredonda as labels das barras
+        hjust = -0.25
+      ), 
+      size = 3.0
+    ) +
+    # OBS: estou usando scale_x_continuous( ), pois a maior barra do gráfico estava sendo "cortada"
+     scale_x_continuous(
+      expand = c(0, 0), # Remove expansão automática
+      limits = c(0, max(data[[var_x]]) * 1.3) # Define limite máximo 10% maior que o valor máximo
+    )+  
+    theme_minimal() +
+    theme(
+      # Tamanho da fonte e negrito do título do gráfico
+      plot.title = element_text(size = 11, face = 'bold'),
+      # Posiciona o título no canto do gráfico (plot)
+      plot.title.position = "plot",
+      # Tamanho da fonte e negrito do subtítulo do gráfico
+      plot.subtitle = element_text(size = 9), 
+      # Tamanho dos rótulos dos eixos (axis) x e y
+      axis.text.x = element_text(size = 8, color = "black"),  
+      axis.text.y = element_text(size = 8, color = "black"),
+      # Tamanho dos Título dos eixos (axis) x e y
+      axis.title.x = element_text(size = 7, color = "gray37"),
+      axis.title.y = element_text(size = 7, color = "gray37"),
+      # Margens --> margin(top, right, bottom, left)
+      plot.margin = margin(10,10,10,20)
+    )
+}
+```
+
+### Função para criar mapas
+
+```{r}
+# Função para criar o mapa
+criar_mapa <- function(data, var, title, subtitulo = NULL) {
+  # Filtrar os dados com valores diferentes de zero
+  data_destacado <- data %>% 
+    filter(.data[[var]] != 0) %>%
+    arrange(desc(.data[[var]])) 
+  
+  # Selecionar os 10 maiores valores
+  data_top10 <- data_destacado %>% 
+    slice_head(n = 10)
+  
+  # Criação do mapa
+  mapa <- ggplot() +
+    # Camada 1: Todos os Municípios (fundo cinza)
+    geom_sf(
+      data = data, 
+      aes(text = paste("Município: ", Município,
+                       "<br>", var, ": ", .data[[var]])),
+      fill = "ghostwhite", 
+      color = "black", 
+      lwd = 0.1
+    ) +
+    # Camada 2: Todos os municípios com valores positivos (tom pastel)
+    geom_sf(
+      data = data_destacado, 
+      aes(fill = .data[[var]], label = Município),
+      color = "black", 
+      lwd = 0.1,
+      alpha = 0.5  # Transparência para tom pastel
+    ) +
+    # Camada 3: Municípios com os 10 maiores valores
+    geom_sf(
+      data = data_top10, 
+      aes(fill = .data[[var]], label = Município),
+      color = "black", 
+      lwd = 0.9
+    ) +
+    # Paleta de cores
+    scale_fill_viridis_c(
+      option = "viridis", 
+      name = "Tx. média por Município", 
+      direction = -1
+    ) +
+    labs(title = title) +
+    theme_minimal() +
+    theme(
+      legend.title = element_text(size = 9), 
+      plot.title = element_text(size = 11, face = "bold", hjust = -1)
+    )
+  
+  # Transformar o gráfico em interativo com ggplotly
+  ggplotly(mapa, width = 650) %>%
+    config(displayModeBar = FALSE) %>%
+    layout(
+      title = list(
+        text = paste0("<b>", title, "</b><br><sub>", subtitulo, "</sub>"),
+        x = 0,
+        xanchor = "left"
+      ),
+      xaxis = list(fixedrange = TRUE),
+      yaxis = list(fixedrange = TRUE)
+    )
+}
+
+```
+
+## Aplicar as Funções
+
+### Óbitos no <u>parto, gravidez e puerpério</u>, entre 2012 à 2022
+
+```{r}
+# Municípios do RJ com mais óbitos no parto, gravidez e puerpério, entre 2012 à 2022
+rank_1 <- grafico_ranking(
+  data = taxa_e_geom,
+  var_x = "Tx_media_obito_Grav_Part_Puerp",
+  var_y = "Município",
+  titulo = "Municípios do RJ com mais óbitos no parto, gravidez e puerpério, entre 2012 à 2022",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)",
+  lab_x = "Tx. média de óbitos no parto, gravidez e puerpério"
+)
+```
+
+```{r, message=FALSE, warning=FALSE}
+# Total de óbitos na gravidez, por Município do RJ, entre 2012 a 2022
+mapa_1 <- criar_mapa(
+  data = taxa_e_geom,
+  var = "Tx_media_obito_Grav_Part_Puerp",
+  title = "Óbitos no parto, gravidez e puerpério, por Município do RJ, entre 2012 a 2022",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)"
+)
+```
+
+### Óbitos na <u>gravidez</u>, entre 2012 a 2022
+
+```{r}
+# Municípios do RJ com mais óbitos na gravidez, entre 2012 a 2022
+rank_2 <- grafico_ranking(
+  data = taxa_e_geom,
+  var_x = "Tx_media_obito_Gravidez",
+  var_y = "Município",
+  titulo = "Óbitos na gravidez",
+  lab_x = "Tx. média de óbitos na gravidez"
+)
+```
+
+```{r, message=FALSE, warning=FALSE}
+# Total de óbitos na gravidez, por Município do RJ, entre 2012 a 2022
+mapa_2 <- criar_mapa(
+  data = taxa_e_geom,
+  var = "Tx_media_obito_Gravidez",
+  title = "Óbitos na gravidez, por Município do RJ, entre 2012 a 2022",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)"
+)
+```
+
+### Óbitos no <u>parto</u>, entre 2012 a 2022
+
+```{r}
+# Municípios do RJ com mais óbitos no parto, entre 2012 a 2022
+rank_3 <- grafico_ranking(
+  data = taxa_e_geom,
+  var_x = "Tx_media_obito_Parto",
+  var_y = "Município",
+  titulo = "Óbitos no parto",
+  lab_x = "Tx. média de óbitos na Parto"
+)
+```
+
+```{r, message=FALSE, warning=FALSE}
+# Total de óbitos no parto, por Município do RJ, entre 2012 a 2022
+mapa_3 <- criar_mapa(
+  data = taxa_e_geom,
+  var = "Tx_media_obito_Parto",
+  title = "Óbitos no parto, por Município do RJ, entre 2012 a 2022",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)"
+)
+```
+
+### Óbitos no <u>puérperio de até 42 dias após o parto</u>, entre 2012 a 2022
+
+```{r}
+# Municípios do RJ com mais óbitos no puérperio de até 42 dias após o parto, entre 2012 a 2022
+rank_4 <- grafico_ranking(
+  data = taxa_e_geom,
+  var_x = "Tx_media_obito_Puerp_42",
+  var_y = "Município",
+  titulo = "Óbitos no puérperio de até 42 dias",
+  lab_x = "Tx. média de óbitos no puerpério de até 42 dias"
+)
+```
+
+```{r, message=FALSE, warning=FALSE}
+# Total de óbitos no puerpério de até 42 dias, por Município do RJ, entre 2012 a 2022
+mapa_4 <- criar_mapa(
+  data = taxa_e_geom,
+  var = "Tx_media_obito_Puerp_42",
+  title = "Óbitos no puerpério de até 42 dias",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)"
+)
+```
+
+### Óbitos no <u>puérperio de 43 dias a 1 ano após o parto</u>, entre 2012 a 2022
+
+```{r}
+# Municípios do RJ com mais óbitos no puérperio de 43 dias a 1 ano após o parto, entre 2012 a 2022
+rank_5 <- grafico_ranking(
+  data = taxa_e_geom,
+  var_x = "Tx_media_obito_Puerp_43_1ano",
+  var_y = "Município",
+  titulo = "Óbitos no puérperio de 43 dias a 1 ano",
+  lab_x = "Tx. média de óbitos no puerpério de 43 dias à 1 ano"
+)
+```
+
+```{r, message=FALSE, warning=FALSE}
+# Total de óbitos no puerpério de 43 dias a 1 ano após o parto, por Município do RJ, entre 2012 a 2022
+mapa_5 <- criar_mapa(
+  data = taxa_e_geom,
+  var = "Tx_media_obito_Puerp_43_1ano",
+  title = "Óbitos no puerpério de 43 dias a 1 ano, por Município do RJ, entre 2012 a 2022",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)"
+)
+```
+
+## Ranking: Municípios do RJ com mais óbitos no <u>parto, gravidez e puerpério</u>, entre 2012 à 2022
+
+```{r}
+rank_1
+```
+
+## Ranking: Municípios do RJ com mais óbitos por categoria, entre 2012 a 2022
+
+```{r}
+# Configurar o título 
+titulo_painel <- textGrob(
+  "Municípios do RJ com mais óbitos maternos, por categoria (2012 a 2022)",
+  gp = gpar(fontsize = 14, fontface = "bold", col = "black"),  
+  hjust = 0, # Alinha o texto à esquerda
+  x=0) # definir margem à esquerda 
+
+
+# Configurar o subtítulo
+subtitulo_painel <- textGrob(
+  "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos), de cada município, entre 2012 a 2022",
+  gp = gpar(fontsize = 9, fontface = "italic", col = "gray40"), hjust = 0, x=0)
+
+# Combinar título e subtítulo em um único grob
+titulo_completo <- arrangeGrob(
+  titulo_painel,
+  subtitulo_painel,
+  ncol = 1
+)
+
+# Criar o painel
+grid.arrange(
+  rank_2, rank_3, rank_4, rank_5,
+  ncol = 2, 
+  nrow = 2,
+  top =titulo_completo, # Título do painel
+  padding = unit(1, "cm") # Espaçamento entre os gráficos
+)
+
+```
+
+## Mapas
+
+```{r}
+mapa_1
+```
+
+```{r}
+mapa_2
+```
+
+```{r}
+mapa_3
+```
+
+```{r}
+mapa_4
+```
+
+```{r}
+mapa_5
+```
+
+# 4. Análise de Correlação entre óbitos maternos e os indicadores socioeconômicos
+
+As variáveis socioconômicas que tem maior correlação o total de obito
+materno em cada categoria são: **população**, **PIB por município** e
+"**VAB_Administracao_Defesa_Educacao_Saude_publica_Seguridade_Social**",
+essa última está relacionada aos gastos públicos com saúde, educação,
+aposentadoria e etc. Já o PIB por município define o consumo, que
+impacta na arrecadação de impostos. Portanto, faz sentido essas duas
+variáveis serem altamente correlacionadas com o total de óbitos.
+
+Também faz sentido a variável População ser correlacionada, pois quanto
+maior o tamanho da população de um lugar, maiores as chances de óbito.
+
+### Preparar a base
+
+```{r}
+indicadores <- dados_socioeconomicos %>% 
+  select(- c("Codigo_UF",
+             "Municipio",
+    "Codigo_Mesorregiao",
+             "Sigla_UF",
+             "Nome_Mesorregiao",
+             "Nome da Microrregião",
+             "Codigo_Microrregiao", 
+             "Codigo_Regiao_Geografica_Imediata",
+             "Nome_Regiao_Geografica_Imediata")) %>% 
+     mutate(Codmun7 = as.character(Codmun7),
+            Codmun6 = as.character(Codmun6)
+            )
+
+datatable(head(indicadores),
+          options = list(dom='t'))
+```
+
+```{r}
+names(obitos_em_relacao_a_populacao_1)
+```
+
+```{r}
+obitos_pop <- obitos_em_relacao_a_populacao_1 %>% select(
+                Codmun6, Codmun7, Ano,
+                Municipio, Total_Obito_Gravidez,
+                Total_Obito_Parto, Total_Obito_Puerp_42_parto, 
+                Total_Obito_Puerp_43_1ano,
+                TOTAL_Grav_Part_Puerp)
+     
+```
+
+```{r}
+tx_e_indicadores <-obitos_pop %>% 
+                  left_join(indicadores, by= c("Codmun7","Codmun6", "Ano" ))
+```
+
+### Calcular correlação
+
+```{r}
+# Calcular a correlação
+correlacao <- tx_e_indicadores %>%
+  select(-c(Codmun7, Codmun6, Ano, Municipio)) %>% # Remover as colunas irrelevantes
+  select(where(is.numeric)) %>%                   # Selecionar apenas colunas numéricas
+  as.matrix() %>%                                 # Converter em matriz
+  rcorr()                                         # Calcular a correlação
+
+
+# Mostrar resultados
+# correlacao$r  # Matriz de correlação
+# correlacao$n  # Número de pares usados para calcular cada correlação
+# correlacao$P  # Valores p para cada correlação
+```
+
+```{r}
+# Dividir a correlação em partes menores
+correlacao_reduzida_1 <- correlacao$r[c(1:5), 6:11]
+correlacao_reduzida_2 <- correlacao$r[c(1:5), 12:16]
+#melt(correlacao_reduzida_2) # --> library(reshape2)
+correlacao_reduzida_3 <- correlacao$r[c(1:5), 14:18]
+```
+
+### Função para criar gráfico de correlação
+
+```{r}
+# Função correlação
+grafico_correlacao <- function(correlacao_reduzida_3, matriz_p) {
+  ggcorrplot(
+    correlacao_reduzida_3,
+    hc.order = TRUE,  # Agrupar as variáveis
+    type = "lower",   # Esconder o espelhamento
+    lab = TRUE,       # Mostrar os valores das correlações
+    lab_size = 3,     # Tamanho da fonte com o valor da correlação
+    p.mat = matriz_p, # Matriz de p-valores
+    sig.level = 0.05, # Nível de significância de 5%
+    insig = "blank",  # Deixar em branco os p-valores estatisticamente insignificantes
+    colors = c("#E69F00", "white", "#954ECA") # Cores: negativa, neutra, positiva
+  ) +
+  labs(
+    title = "Matriz de Correlação",
+    subtitle = "Correlação considerando o p-valor"
+  ) +
+  theme(
+    axis.text.x = element_text(size = 7, angle = 25),
+    axis.text.y = element_text(size = 8)
+  )
+}
+
+```
+
+### Aplicar a função
+
+```{r message=FALSE, warning=FALSE}
+grafico_correlacao(correlacao_reduzida_1, correlacao$P)
+grafico_correlacao(correlacao_reduzida_2, correlacao$P)
+grafico_correlacao(correlacao_reduzida_3, correlacao$P)
+```
+
+# 5. Quais municípios têm as maiores taxas médias de óbito maternos, para cada categoria de raça/cor?
+
+## Preparar os dados
+
+Farei a mesma preparação do tópico 3.
+
+### Tabela 1 - Taxa média de óbito + geom
+
+```{r}
+taxa_e_geom_2<- dados_espaciais_municipios %>%
+  left_join(taxa_media_obito_2, by = "Codmun7")  %>%  # Remover coluna redundante
+  mutate(
+    across(starts_with("T"), ~ coalesce(., 0))  # Substituir NA por 0 em colunas que começam com "T"
+  )
+
+# OBS: coalesce() --> Substituir NA´s
+```
+
+```{r}
+# Verificar a classe do objeto
+class(taxa_e_geom_2)
+```
+
+### Tabela 2 - População por raça/cor + geom
+
+```{r}
+pop_2022 <- populacao_2022 %>% 
+ pivot_longer(
+    cols = starts_with("Mulher") & ends_with("2022"),  # Selecione as colunas
+    names_to = "Raca_Cor",  # Nome da nova coluna que agrupa os valores
+    values_to = "Populacao_por_Raca_Cor"     # Nome da coluna para os valores correspondentes
+  ) %>%
+  # Remover "Mulher" e "2022" da coluna "Raca_Cor"
+  mutate(
+    Raca_Cor = str_remove(Raca_Cor, "Mulher_"),  # Remove "Mulher_"
+    Raca_Cor = str_remove(Raca_Cor, "_2022")     # Remove "_2022"
+  ) %>% 
+  select(- c(Pop_Total_Mulheres_por_faixa_etaria_2022,Faixa_Etaria)) %>% 
+  group_by(Codmun7, Municipio,Raca_Cor) %>% 
+  reframe(Populacao_por_Raca_Cor = sum(Populacao_por_Raca_Cor, rm.na=TRUE)) %>% 
+  distinct()
+```
+
+```{r}
+pop_2022 <- pop_2022  %>% 
+  mutate(Municipio = sub("\\(RJ\\)$", "", Municipio))%>%
+  # Preencher todos os NAs com 0
+  mutate_all(~replace(., is.na(.), 0))
+```
+
+```{r}
+pop_2022_geom <- dados_espaciais_municipios %>% 
+                 left_join(pop_2022, by="Codmun7")
+```
+
+## Aplicar as funções do Tópico 3
+
+### Categoria de Cor/Raça: Branca
+
+```{r}
+rank_1b <- grafico_ranking(
+  data = taxa_e_geom_2,
+  var_x = "Tx_media_obito_Branca",
+  var_y = "Municipio",
+  titulo = "Categoria Cor/Raça: Branca",
+  subtitulo = "",
+  lab_x = "Tx. média de óbitos maternos de mulheres brancas"
+)
+```
+
+```{r, message=FALSE, warning= FALSE}
+mapa_1b <- criar_mapa(
+  data = taxa_e_geom_2,
+  var = "Tx_media_obito_Branca",
+  title = "Óbitos de mulheres brancas, por Município do RJ, entre 2012 a 2022",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)"
+)
+```
+
+```{r, message=FALSE, warning= FALSE}
+filtro_1b1 <- pop_2022_geom %>% filter(Raca_Cor == "Branca")
+
+
+mapa_1b1 <- criar_mapa(
+  data = filtro_1b1,
+  var = "Populacao_por_Raca_Cor",
+  title = "População de mulheres brancas, por Município do RJ, em 2022",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)"
+)
+```
+
+### Categoria de Cor/Raça: Preta
+
+```{r}
+rank_2b <- grafico_ranking(
+  data = taxa_e_geom_2,
+  var_x = "Tx_media_obito_Preta",
+  var_y = "Municipio",
+  titulo = "Categoria Cor/Raça: Preta",
+  subtitulo = "",
+  lab_x = "Tx. média de óbitos maternos de mulheres pretas"
+)
+```
+
+```{r, message=FALSE, warning= FALSE}
+mapa_2b <- criar_mapa(
+  data = taxa_e_geom_2,
+  var = "Tx_media_obito_Preta",
+  title = "Óbitos de mulheres pretas, por Município do RJ, entre 2012 a 2022",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)"
+)
+```
+
+```{r, message=FALSE, warning= FALSE}
+filtro_2b1 <- pop_2022_geom %>% filter(Raca_Cor == "Preta")
+
+
+mapa_2b1 <- criar_mapa(
+  data = filtro_2b1,
+  var = "Populacao_por_Raca_Cor",
+  title = "População de mulheres pretas, por Município do RJ, em 2022",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)"
+)
+```
+
+### Categoria de Cor/Raça: Parda
+
+```{r}
+rank_3b <- grafico_ranking(
+  data = taxa_e_geom_2,
+  var_x = "Tx_media_obito_Parda",
+  var_y = "Municipio",
+  titulo = "Categoria Cor/Raça: Parda",
+  subtitulo = "",
+  lab_x = "Tx. média de óbitos maternos de mulheres pardas"
+)
+```
+
+```{r, message=FALSE, warning= FALSE}
+mapa_3b <- criar_mapa(
+  data = taxa_e_geom_2,
+  var = "Tx_media_obito_Parda",
+  title = "Óbitos de mulheres pardas, por Município do RJ, entre 2012 a 2022",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)"
+)
+```
+
+```{r, message=FALSE, warning= FALSE}
+filtro_3b1 <- pop_2022_geom %>% filter(Raca_Cor == "Parda")
+
+
+mapa_3b1 <- criar_mapa(
+  data = filtro_3b1,
+  var = "Populacao_por_Raca_Cor",
+  title = "População de mulheres pardas, por Município do RJ, em 2022",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)"
+)
+```
+
+### Categoria de Cor/Raça: Amarela
+
+```{r}
+rank_4b <- grafico_ranking(
+  data = taxa_e_geom_2,
+  var_x = "Tx_media_obito_Amarela",
+  var_y = "Municipio",
+  titulo = "Categoria Cor/Raça: Amarela",
+  subtitulo = "",
+  lab_x = "Tx. média de óbitos maternos de mulheres amarelas"
+)
+```
+
+```{r, message=FALSE, warning= FALSE}
+mapa_4b <- criar_mapa(
+  data = taxa_e_geom_2,
+  var = "Tx_media_obito_Amarela",
+  title = "Óbitos de mulheres amarela, por Município do RJ, entre 2012 a 2022",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)"
+)
+```
+
+```{r, message=FALSE, warning= FALSE}
+filtro_4b1 <- pop_2022_geom %>% filter(Raca_Cor == "Amarela")
+
+
+mapa_4b1 <- criar_mapa(
+  data = filtro_4b1,
+  var = "Populacao_por_Raca_Cor",
+  title = "População de mulheres Amarela, por Município do RJ, em 2022",
+  subtitulo = "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos)"
+)
+```
+
+### Ranking Municípios
+
+```{r}
+library(grid)
+# Configurar o título 
+titulo_painel <- textGrob(
+  "Municípios com maiores as taxas médias de óbito maternos, para cada categoria de raça/cor",
+  gp = gpar(fontsize = 14, fontface = "bold", col = "black"),  
+  hjust = 0, # Alinha o texto à esquerda
+  x=0) # definir margem à esquerda 
+
+
+# Configurar o subtítulo
+subtitulo_painel <- textGrob(
+  "Taxa média de óbitos por 100.000 habitantes femininos (10 a 49 anos), de cada município, entre 2012 a 2022",
+  gp = gpar(fontsize = 9, fontface = "italic", col = "gray40"), hjust = 0, x=0)
+
+# Configurar o subtítulo
+subtitulo_painel_1 <- textGrob(
+  "Categorias de Cor/Raça, de acordo com o IBGE",
+  gp = gpar(fontsize = 6, fontface = "italic", col = "gray40"), hjust = 0, x=0)
+
+# Combinar título e subtítulo em um único grob
+titulo_completo <- arrangeGrob(
+  titulo_painel,
+  subtitulo_painel,
+  subtitulo_painel_1 ,
+  ncol = 1
+  )
+
+# Criar o painel
+grid.arrange(
+  rank_1b, rank_2b, rank_3b, rank_4b,
+  ncol = 2, 
+  nrow = 2,
+  top =titulo_completo, # Título do painel
+  padding = unit(1, "cm") # Espaçamento entre os gráficos
+)
+
+```
+
+## Mapas
+
+### Categoria de Cor/Raça: Branca
+
+```{r}
+mapa_1b
+```
+
+```{r}
+mapa_1b1
+```
+
+### Categoria de Cor/Raça: Preta
+
+```{r}
+mapa_2b
+```
+
+```{r}
+mapa_2b1
+```
+
+### Categoria de Cor/Raça: Parda
+
+```{r}
+mapa_3b
+```
+
+```{r}
+mapa_3b1
+```
+
+### Categoria de Cor/Raça: Branca
+
+```{r}
+mapa_4b
+```
+
+```{r}
+mapa_4b1
+```
+
+# 6. Existe alguma associação entre o momento do óbito e as categorias de raça/cor?
+
+Para responder esta pergunta, eu criei uma tabela de contigência e um
+teste de hipótese, cujas hipótese são:
+
+$H_0:$ **Não** **existe** associação significativa entre as variáveis
+`Raca_Cor` e `Momento_do_Obito`.
+
+$H_1:$ **Existe** associação significativa entre as variáveis `Raca_Cor`
+e `Momento_do_Obito`. Ou seja, o momento do óbito está relacionado à
+cor/raça das mulheres.
+
+O teste rejeitou a hipótese nula, mostrando que, possivelmente, existe
+associação entre as variáveis, indicando que o momento do óbito varia
+conforme a raça/cor da mulher.
+
+Isso também é destacado na tabela de contigência, onde, por exemplo
+mulheres pretas e pardas morrem mais no puerpério entre 43 dias a 1 ano,
+após o parto (se comparado com outras categorias).
+
+```{r}
+table_contingencia <- as.data.frame.matrix(
+  table(tabela_municipio$Raca_Cor, tabela_municipio$Momento_do_Obito))
+
+datatable(table_contingencia,
+          options=list(dom='t'))
+```
+
+```{r}
+# Teste qui-quadrado
+#teste_chi2 <- chisq.test(table_contingencia)
+
+# Teste exato de Fisher
+#teste_fisher <- fisher.test(table_contingencia)
+
+# Teste exato de Fisher com simulação
+teste_fisher <- fisher.test(table_contingencia, simulate.p.value = TRUE, B = 500000) 
+# B --> Quantidade de simulações
+```
+
+```{r}
+teste_fisher
+```
+
+# 7. Perfil - óbitos maternos na faixa etária entre 10 a 14 anos
+
+Podemos notar que a maioria dos municípios em que já ocorreram óbitos
+maternos nesta faixa etária se encontra na baixada fluminense (São joão
+de Meriti, Duque de Caxias e Nova Iguaçu), além do Rio de Janeiro,
+Resende (região Sul Fluminense) e Campo dos Goytacazes e Petropólis.
+
+A maioria dessas meninas era da cor "Parda", 66% delas tinham emprego e
+33% delas tinha só até 3 anos de estudo.
+
+Além disso, os óbitos ocorreram, ou na gravidez ou no puerpério.
+
+Gestações nesta faixa etária são muito críticas por diversos motivos,
+como o fato de terem sido frutos de pedofilia.
+
+```{r}
+obitos_10_14_anos <- tabela_municipio %>% 
+                     filter(Idade_Categoria == "10 a 14 anos")
+```
+
+## Tabela com o resumo dos dados
+
+```{r}
+datatable(obitos_10_14_anos,
+          options = list (dom ='t'))
+```
+
+## Muncípios do RJ que ocorreram óbitos maternos, na faixa etária entre 10 a 14 anos
+
+```{r}
+obitos_10_14_anos_1 <- dados_espaciais_municipios %>% 
+ left_join(tabela_municipio, by= "Codmun7") %>% 
+                     filter(Idade_Categoria == "10 a 14 anos")%>% 
+                       rename(Município = Município.x)
+
+
+class(obitos_10_14_anos_1)  
+```
+
+```{r, warning=FALSE, message=FALSE}
+mapa_10_14 <- ggplot() +
+  geom_sf(
+    data = dados_espaciais_municipios, 
+    aes(text = paste("Município: ", Município)), 
+    fill = "ghostwhite", 
+    color = "black", 
+    lwd = 0.1
+  ) +
+  geom_sf(
+    data = obitos_10_14_anos_1, 
+    aes(fill = Momento_do_Obito,
+        text = paste("Município: ", Município)),  
+    color = "black", 
+    lwd = 0.1,
+    alpha = 0.5
+  ) +
+  labs(title = "title" ) +
+  theme_minimal() +
+  theme(
+    legend.title = element_text(size = 9), 
+    plot.title = element_text(size = 11, face = "bold", hjust = -1)
+  )
+
+ggplotly(mapa_10_14, width = 650) %>%
+  config(displayModeBar = FALSE) %>%
+  layout(
+    title = list(
+      text = paste0("<b>", "Muncípios do RJ que ocorreram óbitos maternos", 
+                    "</b><br><sub>", "Na faixa etária entre 10 a 14 anos ", "</sub>"),
+      x = 0,
+      xanchor = "left"
+    ),
+    xaxis = list(fixedrange = TRUE),
+    yaxis = list(fixedrange = TRUE),
+    legend = list(x = 0.5,
+                 y = -0.2,
+                 xanchor = "center",
+                 yanchor = "bottom",
+                 orientation = "h")) 
+
+```
+
+## Contagem de óbitos maternos, separados por raça/cor, na Faixa Etária de 10 a 14 anos
+
+```{r}
+# Criar tabela de contagem
+tabela_contagem <- obitos_10_14_anos_1 %>%
+  count(Raca_Cor, name = "Contagem")
+
+```
+
+```{r}
+grafico_raca_cor <- ggplot(tabela_contagem, aes(x = Raca_Cor, y = Contagem, fill = Raca_Cor)) +
+  geom_col() +
+  geom_text(aes(label = Contagem), vjust = -0.3, color = "black", size = 4) + # Ajuste no posicionamento do rótulo
+  labs(
+    title = "Contagem de óbitos maternos, separados por raça/cor",
+    subtitle = "Faixa Etária de 10 a 14 anos",
+    x = "",
+    y = "Contagem",
+    fill = "Raça/Cor"
+  ) +
+  scale_fill_manual(values = c(
+    "Branca" = "#954ECA",
+    "Preta" = "#56B4E9",
+    "Parda" = "#009E73",
+    "Amarela" = "#E69F00"
+  )) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    plot.margin = margin(10, 15, 20, 15) # margem 
+  ) +
+  expand_limits(y = max(tabela_contagem$Contagem) * 1.1) # Aumentar o limite do eixo Y
+
+
+print(grafico_raca_cor)
+
+```
+
+# Análise multivariada de classificação (Clusters hierarquicos por componentes princiais)
+
+Para a classificação desses municípios, utilizarei o método de clusters
+hierárquicos. O objetivo é entender o perfil dos municípios, em relação
+as variáveis socioecônomicas. Eu vou utilizar o ano de 2021 por ser
+recente e ter mais informações socioeconomicas na tabela (se comparado
+ao ano de 2022, por exemplo).
+
+Primeiro, eu vou preparar a base e olhar as informações socieconomicas
+de 2021.
+
+## Preparar a base
+
+```{r}
+final<-read.csv2('../Dados/0.Tabelas/final.csv')
+```
+
+```{r}
+# Retirando linhas com NA´s
+finalt <- final[-c(1, 917, 918, 919, 920), ]
+# Filtrando o Ano de 2021
+final_2021<-finalt%>%filter(
+  Ano==2021)
+```
+
+### Criando a variável morte
+
+```{r}
+mortes_municipio<-tabela_municipio %>% group_by(Município)%>%summarise(
+  mortes = sum(Contagem_Obitos)
+)
+```
+
+```{r}
+mortes_municipio1 <- merge(
+  mortes_municipio,              # DataFrame principal
+  tabela_municipio[, c("Município", "Codmun7")],  # Seleciona as colunas relevantes
+  by = "Município",              # Faz a junção com base na coluna "Município"
+  all.x = TRUE                   # Preserva todas as linhas de mortes_municipio
+)
+
+mortes_municipio1 <- mortes_municipio1[!duplicated(mortes_municipio1$Codmun7), ]
+```
+
+```{r}
+final_2021e <- merge(
+  final_2021,                 # DataFrame principal
+  mortes_municipio1[, c("Codmun7", "mortes")],  # Seleciona as colunas relevantes
+  by = "Codmun7",             # Faz a junção com base na coluna "Codmun7"
+  all.x = TRUE                # Preserva todas as linhas de final_2021
+)
+
+```
+
+```{r}
+final_2021 <- final_2021e %>%
+  mutate(mortes = if_else(is.na(mortes), 0, mortes)) 
+```
+
+```{r}
+df<-final_2021%>%select(Impostos_liquidos_de_subsidios,
+                                 VAB_Agropecuaria,
+                              VAB_Servico,
+                      VAB_Administracao_Defesa_Educacao_Saude_publica_Seguridade_social,
+                      PIB_Municipio,
+                      Populacao,
+                      Rendimento_medio_no_setor_formal,
+                      Valor_medio_Internacoes_hospitalares,
+                      Porcentagem_de_meninas_de_10_a_14_anos_de_idade_que_tiveram_filhos,
+                      Porcentagem_de_adolescentes_de_15_a_17_anos_de_idade_que_tiveram_filhos,
+                        mortes
+  )
+```
+
+## Dados Socioeconômicos
+
+Os valores das categorias foram obtidos atráves da média de cada
+variável.
+
+### Produto interno Bruto (Mapa)
+
+Neste mapa, os municípios do estado do Rio de Janeiro estão divididos em
+três categorias com base no PIB municipal:
+
+<ol type="I">
+
+<li>Entre R\$ 900 milhões e R\$ 2 bilhões (classificação média);</li>
+
+<li>Abaixo de R\$ 900 milhões;</li>
+
+<li>Acima de R\$ 2 bilhões.</li>
+
+</ol>
+
+A produção interna do município constitui o principal fator para a
+arrecadação tributária local, influenciando diretamente as
+possibilidades de investimento em políticas públicas, especialmente na
+área da saúde.
+
+```{r}
+final_2021_pibm<-final_2021 %>% filter(
+  PIB_Municipio>=900000000&
+    PIB_Municipio<=2000000000
+)
+final_2021_pibam<-final_2021 %>% filter(
+  PIB_Municipio<900000000
+ )
+
+final_2021_pibacm<-final_2021 %>% filter(
+  PIB_Municipio>2000000000
+)
+
+mapa_filtrado_pibm<- dados_espaciais_municipios %>%
+  filter(Município %in% final_2021_pibm$Municipio)
+
+mapa_filtrado_pibam<- dados_espaciais_municipios %>%
+  filter(Município %in% final_2021_pibam$Municipio) 
+
+mapa_filtrado_pibacm<- dados_espaciais_municipios %>%
+  filter(Município %in% final_2021_pibacm$Municipio)
+
+mapa_filtrado_pibm$cat_pib <- "Próximos da média"
+mapa_filtrado_pibam$cat_pib <- "Abaixo da média"
+mapa_filtrado_pibacm$cat_pib <- "Acima da média"
+
+# Criar o gráfico
+ggplot() +
+  # Mapa de base
+  geom_sf(data = dados_espaciais_municipios, fill = "gray90", color = "black") +
+  
+  # Mapeando a cor de acordo com a categoria 'cat_pib'
+  geom_sf(data = mapa_filtrado_pibm, aes(fill = cat_pib), color = "black") +
+  geom_sf(data = mapa_filtrado_pibam, aes(fill = cat_pib), color = "black") +
+  geom_sf(data = mapa_filtrado_pibacm, aes(fill = cat_pib), color = "black") +
+  
+  # Definindo as cores para as categorias
+  scale_fill_manual(values = c("Próximos da média" = "#381850", 
+                               "Abaixo da média" = "#2C848C", 
+                               "Acima da média" = "#F5E62B")) +
+  
+  theme_minimal() +
+  labs(title = "Produto Interno Bruto 2021",
+       subtitle = "Municipal",
+       fill = "Legenda")
+```
+
+### Gasto público
+
+Outra variável que considero decisiva para o número específico de mortes
+analisado é o gasto público municipal, que inclui os investimentos em
+saúde. Em grande parte dos municípios, aproximadamente 65 localidades no
+estado do Rio de Janeiro, o gasto público foi inferior a R\$ 900
+milhões, como é possível observar no mapa. Além disso, 15 municípios
+apresentaram gastos próximos à média, enquanto 11 superaram esse
+patamar.
+
+```{r}
+final_2021_gpm<-final_2021 %>% filter(
+  VAB_Administracao_Defesa_Educacao_Saude_publica_Seguridade_social>=900000000&
+    VAB_Administracao_Defesa_Educacao_Saude_publica_Seguridade_social<=2000000000
+)
+
+final_2021_gpam<-final_2021 %>% filter(
+  VAB_Administracao_Defesa_Educacao_Saude_publica_Seguridade_social<900000000
+)
+
+final_2021_gpacm<-final_2021 %>% filter(
+  VAB_Administracao_Defesa_Educacao_Saude_publica_Seguridade_social>2000000000
+)
+
+mapa_filtrado_gpm<- dados_espaciais_municipios%>%
+  filter(Município %in% final_2021_gpm$Municipio)
+
+mapa_filtrado_gpam<- dados_espaciais_municipios %>%
+  filter(Município %in% final_2021_gpam$Municipio) 
+
+mapa_filtrado_gpacm<- dados_espaciais_municipios %>%
+  filter(Município%in% final_2021_gpacm$Municipio)
+
+mapa_filtrado_gpm$cat_pib <- "Próximos da média"
+mapa_filtrado_gpam$cat_pib <- "Abaixo da média"
+mapa_filtrado_gpacm$cat_pib <- "Acima da média"
+
+# Criar o gráfico
+ggplot() +
+  # Mapa de base
+  geom_sf(data = dados_espaciais_municipios, fill = "gray90", color = "black") +
+  
+  # Mapeando a cor de acordo com a categoria 'cat_pib'
+  geom_sf(data = mapa_filtrado_gpm, aes(fill = cat_pib), color = "black") +
+  geom_sf(data = mapa_filtrado_gpam, aes(fill = cat_pib), color = "black") +
+  geom_sf(data = mapa_filtrado_gpacm, aes(fill = cat_pib), color = "black") +
+  
+  # Definindo as cores para as categorias
+  scale_fill_manual(values = c("Próximos da média" = "#381850", 
+                               "Abaixo da média" = "#2C848C", 
+                               "Acima da média" = "#F5E62B")) +
+  
+  theme_minimal() +
+  labs(title = "Gasto público",
+       subtitle = "Municipal",
+       fill = "Legenda")
+```
+
+### População
+
+Outra variável relevante para compreender essas mortes é a população.
+Observa-se que o mapa da distribuição populacional apresenta grande
+semelhança com o mapa do gasto público, evidenciando uma possível
+correlação entre esses dois fatores.
+
+```{r}
+final_2021_popm<-final_2021 %>% filter(
+  Populacao>=100000&
+    Populacao<=250000)
+
+final_2021_popam<-final_2021 %>% filter(
+  Populacao<100000)
+
+
+final_2021_popacm<-final_2021 %>% filter(
+  Populacao>250000)
+
+
+mapa_filtrado_popm<-  dados_espaciais_municipios %>%
+  filter(Município %in% final_2021_popm$Municipio)
+
+mapa_filtrado_popam<- dados_espaciais_municipios %>%
+  filter(Município %in% final_2021_popam$Municipio) 
+
+mapa_filtrado_popacm<- dados_espaciais_municipios %>%
+  filter(Município %in% final_2021_popacm$Municipio)
+
+mapa_filtrado_popm$cat_pib <- "Próximos da média"
+mapa_filtrado_popam$cat_pib <- "Abaixo da média"
+mapa_filtrado_popacm$cat_pib <- "Acima da média"
+
+# Criar o gráfico
+ggplot() +
+  # Mapa de base
+  geom_sf(data = dados_espaciais_municipios, fill = "gray90", color = "black") +
+  
+  # Mapeando a cor de acordo com a categoria 'cat_pib'
+  geom_sf(data = mapa_filtrado_popm, aes(fill = cat_pib), color = "black") +
+  geom_sf(data = mapa_filtrado_popam, aes(fill = cat_pib), color = "black") +
+  geom_sf(data = mapa_filtrado_popacm, aes(fill = cat_pib), color = "black") +
+  
+  # Definindo as cores para as categorias
+  scale_fill_manual(values = c("Próximos da média" = "#381850", 
+                               "Abaixo da média" = "#2C848C", 
+                               "Acima da média" = "#F5E62B"))  +
+  
+  theme_minimal() +
+  labs(title = "População 2021",
+       subtitle = "Municipal",
+       fill = "Legenda")
+```
+
+## Cluster
+
+Inicialmente, construirei uma matriz contendo apenas as variáveis
+numéricas, que serão padronizadas para evitar discrepâncias devido às
+diferenças de escala. A partir da matriz padronizada, estimarei a matriz
+de distância euclidiana. Com base nessa matriz, treinarei o algoritmo de
+clusters hierárquicos para definir os agrupamentos e, em seguida,
+estimar o dendrograma, que auxiliará na análise e visualização das
+hierarquias entre os municípios.
+
+```{r}
+df<-final_2021%>%select(Impostos_liquidos_de_subsidios,
+                                 VAB_Agropecuaria,
+                              VAB_Servico,
+                      VAB_Administracao_Defesa_Educacao_Saude_publica_Seguridade_social,
+                      PIB_Municipio,
+                      Populacao,
+                      Rendimento_medio_no_setor_formal,
+                      Valor_medio_Internacoes_hospitalares,
+                      Porcentagem_de_meninas_de_10_a_14_anos_de_idade_que_tiveram_filhos,
+                      Porcentagem_de_adolescentes_de_15_a_17_anos_de_idade_que_tiveram_filhos
+                        
+  )
+#Padronização
+df_pad <- scale(df)
+
+# Criar a matriz de distâncias usando a distância euclidiana
+matriz_dist <- dist(df_pad, method = "euclidean")
+
+# Clusterização hierárquica usando o método de ligação completa
+hclust_model <- hclust(matriz_dist, method = "complete")
+
+plot(hclust_model, main = "Dendrograma", xlab = "Observações", sub = "", cex = 0.8)
+```
+
+### Escolha dos clusters
+
+Com base no dendrograma, em uma análise inicial e informal, identifico a
+presença de cinco grupos distintos na amostra. O objetivo da análise de
+clusters é agrupar municípios que apresentem maior proximidade entre si
+em relação às variáveis analisadas. Nesse contexto, acredito que há
+cinco grupos de municípios no estado do Rio de Janeiro que compartilham
+características similares.
+
+```{r }
+num_clusters <- 5
+clusters <- cutree(hclust_model, k = num_clusters)
+
+# Adicionar os clusters ao DataFrame original
+
+
+final_2021<-final_2021 %>%mutate(cluster=clusters )
+
+
+```
+
+## Clusters no mapa
+
+O mapa de cluster está bem proximo dos mapas anteriores, pricipalmente
+em relação ao mapa da população e do gasto público
+
+```{r}
+#mapa_rj <- read_municipality(code_muni = "RJ", year = 2021)
+
+# Filtrar municípios de cada cluster
+cluster_1<-final_2021 %>%filter(cluster==1)
+
+mapa_filtrado_1<- dados_espaciais_municipios %>%
+  filter(Município %in% cluster_1$Municipio)
+
+cluster_2<-final_2021 %>%filter(cluster==2)
+
+mapa_filtrado_2<- dados_espaciais_municipios %>%
+  filter(Município %in% cluster_2$Municipio)
+
+cluster_3<-final_2021 %>%filter(cluster==3)
+
+mapa_filtrado_3<- dados_espaciais_municipios %>%
+  filter(Município %in% cluster_3$Municipio)
+
+
+# mapa do cluster 4 ####
+
+cluster_4<-final_2021 %>%filter(cluster==4)
+
+
+mapa_filtrado_4<- dados_espaciais_municipios %>%
+  filter(Município %in% cluster_4$Municipio)
+
+
+
+# cluster 5
+cluster_5<-final_2021 %>%filter(cluster==5)
+
+
+mapa_filtrado_5<- dados_espaciais_municipios %>%
+  filter(Município =="Rio de Janeiro") 
+
+# Especificar o número do cluster
+mapa_filtrado_1$Cluster <- "Cluster 1"
+mapa_filtrado_2$Cluster <- "Cluster 2"
+mapa_filtrado_4$Cluster <- "Cluster 4"
+mapa_filtrado_3$Cluster <- "Cluster 3"
+mapa_filtrado_5$Cluster <- "Cluster 5"
+
+```
+
+```{r }
+# Criar o gráfico clusters ####
+ggplot() +
+  geom_sf(data = dados_espaciais_municipios, fill = "lightgray", color = "black")+
+     geom_sf(data = mapa_filtrado_1, aes(fill = Cluster), color = "black") +
+  geom_sf(data = mapa_filtrado_5, aes(fill = Cluster), color = "black") +
+  geom_sf(data = mapa_filtrado_2, aes(fill = Cluster), color = "black") +
+  geom_sf(data = mapa_filtrado_4, aes(fill = Cluster), color = "black") +
+  geom_sf(data = mapa_filtrado_3, aes(fill = Cluster), color = "black") +
+  scale_fill_manual(values = c("Cluster 1" = "#381850", 
+                               "Cluster 2" =  "blue",#3366FF", 
+                               "Cluster 3" = "#F5E62B", 
+                               "Cluster 4" = "#2C848C", 
+                               "Cluster 5" = "#FF9900")) +
+  
+  theme_minimal() +
+  labs(title = "Clusters no mapa",
+       subtitle = "Rio de Janeiro 2021",
+       fill = "Clusters")
+
+```
+
+## Gráficos dos clusters e Conclusão
+
+Como pode ser observado na tabela e no gráfico, o Cluster 1, composto
+pelos municípios mais vulneráveis e em maior número, apresentou também o
+maior número de mortes. A cidade do Rio de Janeiro ocupa o segundo
+lugar, seguida pelo Cluster 4 em terceiro, Cluster 2 em quarto, e o
+Cluster 3 em quinto. No gráfico a unidade de medida de população está em
+mil.
+
+Em relação ao PIB, o Cluster 5 (RJ) possui o maior PIB, seguido pelo
+Cluster 4 em segundo lugar, o Cluster 3 em terceiro, o Cluster 1 em
+quarto e o Cluster 2 em quinto. A distribuição da população segue a
+mesma tendência observada no PIB, assim como os gastos públicos e
+impostos.
+
+Os gráficos e tabelas evidenciam que o número de mortes tem uma forte
+correlação com as questões socioeconômicas dos municípios, de maneira
+coordenada. Em todos os clusters, observa-se que, em média, a cada
+10.000 habitantes (número de óbitos dividido pela população), ocorre uma
+morte no parto de mulheres entre 10 e 49 anos nos municípios do estado
+do Rio de Janeiro.
+
+**Conclusão:** Em conclusão, a análise dos clusters revela uma forte
+correlação entre as mortes no parto e os fatores socioeconômicos dos
+municípios do estado do Rio de Janeiro. O Cluster 1, com municípios mais
+vulneráveis, apresentou o maior número de mortes, evidenciando a relação
+entre a vulnerabilidade social e os desfechos adversos na saúde. A
+análise do PIB, população, gasto público e impostos reforça a ideia de
+que as condições econômicas e a capacidade de investimento em saúde
+pública influenciam diretamente a mortalidade materna. Em todos os
+clusters, observou-se que, em média, a cada 1.000 mortes, há uma morte
+no parto de mulheres entre 10 e 49 anos, o que destaca a necessidade
+urgente de políticas públicas mais eficazes e equitativas, direcionadas
+às áreas mais vulneráveis.
+
+A combinação de variáveis socioeconômicas com os dados de mortalidade
+materna aponta para a importância de uma abordagem integrada nas
+políticas públicas, como destaca Paim (2011) ao afirmar que "as
+desigualdades sociais e econômicas têm um impacto direto na saúde da
+população, refletindo nas taxas de mortalidade e morbidade". Portanto, é
+fundamental que os gestores públicos se concentrem na melhoria das
+condições socioeconômicas e de saúde nos municípios mais vulneráveis
+para reduzir as desigualdades e melhorar os índices de saúde materna.
+
+```{r }
+# Agrupar os dados por cluster e calcular as métricas
+cluster_summary <- final_2021 %>%
+  filter(mortes > 0) %>%  # Considerar apenas municípios com mortes > 0
+  group_by(cluster) %>%
+  summarise(
+    Mortes = sum(mortes, na.rm = TRUE),
+    Quantidade = n(),
+    PIB = mean(PIB_Municipio, na.rm = TRUE),
+    `População` = mean(Populacao, na.rm = TRUE),
+    `Gasto público` = mean(VAB_Administracao_Defesa_Educacao_Saude_publica_Seguridade_social, na.rm = TRUE),
+    Impostos = mean(Impostos_liquidos_de_subsidios, na.rm = TRUE)
+  )
+cluster_summary
+cluster_summary_long <- cluster_summary %>%
+  pivot_longer(cols = -cluster, names_to = "variavel", values_to = "valor")
+
+cluster_summary_long <- cluster_summary %>%
+  mutate(
+    PIB = PIB / 1e6,
+    Impostos = Impostos / 1e6,
+    `Gasto público` =  `Gasto público` / 1e6,
+    `População`=  `População`/1e3
+  ) %>%
+  pivot_longer(cols = -cluster, names_to = "variavel", values_to = "valor") %>%
+  group_by(variavel) %>%
+  mutate(
+    proporcao = valor / sum(valor) * 100  # Calcular porcentagens (opcional)
+  ) %>%
+  ungroup()
+
+# Iterar por cada variável e criar gráficos de barras
+unique_vars <- unique(cluster_summary_long$variavel)
+
+for (var in unique_vars) {
+  # Filtrar os dados para a variável atual
+  data_var <- cluster_summary_long %>%
+    filter(variavel == var)
+  
+  # Criar o gráfico de barras
+  p <- ggplot(data_var, aes(x = factor(cluster), y = valor, fill = factor(cluster))) +
+    geom_bar(stat = "identity", position = "dodge") +
+    geom_text(
+      aes(label = round(valor, 2)),  # Adicionar os valores em cima das barras
+      position = position_dodge(width = 0.9),
+      vjust = -0.5,
+      size = 3
+    ) +
+    labs(
+      title = paste("Distribuição de", var, "por Cluster"),
+      x = "Cluster",
+      y = ifelse(var %in% c("PIB", "impostos", "Gasto público"), "Valor (em milhões)", ""),
+      fill = "Cluster"
+    ) +
+     scale_fill_manual(values = c("#381850", "blue","#F5E62B", "#2C848C", "#FF9900")) +  # Definir cores específicas
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5, size = 14),
+      axis.text.x = element_text(size = 10),
+      axis.text.y = element_text(size = 10)
+    )
+  
+ print(p)
+}
+
+```
