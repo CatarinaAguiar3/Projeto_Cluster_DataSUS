@@ -1,4 +1,4 @@
-# 💻 Segmentação de dados de óbito materno
+# Segmentação de dados de óbito materno
 Este projeto é sobre **Óbitos maternos durante a gravidez, parto e o puerpério** de mulheres com **idades entre 10 a 49 anos** , ocorridos nos **municípios do estado do Rio de Janeiro, entre 2012 e 2022**.
 
 Foi realizado uma Análise Explorátória usando mapas para identificar semelhanças entre os municípios; e quais
